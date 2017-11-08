@@ -1,0 +1,12 @@
+#!perl
+use strict;
+use warnings FATAL => 'all';
+use Data::Dumper;
+use Java::ClassFile::Parser;
+use POSIX qw/EXIT_SUCCESS/;
+
+my $file = shift || die "Usage: $0 filename";
+
+print STDERR Dumper(Java::ClassFile::Parser->new(from_file => $file)->parse);
+
+exit(EXIT_SUCCESS);
