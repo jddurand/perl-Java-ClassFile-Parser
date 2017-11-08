@@ -9,11 +9,18 @@ package Java::ClassFile::Parser;
 
 # VERSION
 
+=head1 DESCRIPTION
+
+Java .class files parser and transpiler as per L<JVM9 specification|https://docs.oracle.com/javase/specs/jvms/se9/html/jvms-4.html>.
+
+=cut
+
 use Bit::Vector qw//;
 use Carp qw/croak/;
 use Class::Tiny qw/from_memory from_file/;
 use Config;
 use IO::File;
+use Log::Any qw/$log/;
 use Math::BigFloat;
 
 my @attributes = keys %{Class::Tiny->get_all_attribute_defaults_for(__PACKAGE__)};
@@ -347,11 +354,44 @@ sub parse {
 }
 
 sub _ClassFile {
+    my ($constant_pool_count, $interfaces_count, $fields_count, $methods_count, $attributes_count);
+
     return bless {
-	magic         => _u4($_[0]),
-	minor_version => _u2($_[0]),
-	major_version => _u2($_[0])
+        magic               => _u4($_[0]),
+        minor_version       => _u2($_[0]),
+        major_version       => _u2($_[0]),
+        constant_pool_count => $constant_pool_count = _u2($_[0]),
+        constant_pool       => do {
+            #
+            # Because of Long and Double that takes two indices
+            #
+            my @constant_pool = ();
+            foreach my $i (0.. $constant_pool_count-2) {
+                my $constant_pool = _cp_info($_[0]);
+                $constant_pool[  $i] = $constant_pool;
+                $constant_pool[++$i] = undef if ref($constant_pool) =~ /^CONSTANT_(?:Long|Double)/
+            }
+            \@constant_pool },
+        access_flags        => _u2($_[0]),
+        this_class          => _u2($_[0]),
+        super_class         => _u2($_[0]),
+        interfaces_count    => $interfaces_count = _u2($_[0]),
+        interfaces          => [ map { _u2($_[0]) } (1.. $interfaces_count) ],
+        fields_count        => $fields_count = _u2($_[0]),
+        fields              => [ map { _field_info($_[0]) } (1.. $fields_count) ],
+        methods_count       => $methods_count = _u2($_[0]),
+        methods             => [ map { _method_info($_[0]) } (1.. $methods_count) ],
+        attributes_count    => $attributes_count = _u2($_[0]),
+        attributes          => [ map { _attribute_info($_[0]) } (1.. $attributes_count) ]
     }, 'ClassFile'
 }
+
+sub _cp_info {}
+
+sub _attribute_info {}
+
+sub _method_info {}
+
+sub _field_info {}
 
 1;
