@@ -1,4 +1,13 @@
 #!perl
+
+# PODNAME: java_classfile_parser
+
+# ABSTRACT: Java .class files parser and transpiler
+
+# AUTHORITY
+
+# VERSION
+
 use strict;
 use warnings FATAL => 'all';
 use Data::Dumper;

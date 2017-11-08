@@ -2,6 +2,13 @@ use strict;
 use warnings FATAL => 'all';
 
 package Java::ClassFile::Parser;
+
+# ABSTRACT: Java .class files parser and transpiler
+
+# AUTHORITY
+
+# VERSION
+
 use Bit::Vector qw//;
 use Carp qw/croak/;
 use Class::Tiny qw/from_memory from_file/;
