@@ -16,7 +16,7 @@ Java .class files parser and transpiler as per L<JVM9 specification|https://docs
 =cut
 
 use Bit::Vector qw//;
-use Carp qw/croak/;
+use Carp qw/croak confess/;
 use Class::Tiny qw/from_memory from_file/;
 use Config;
 use IO::File;
@@ -99,25 +99,31 @@ sub _bytesToVector {
 
 sub _u1 {
     use bytes;
-    croak "Not enough data to read a byte" unless length($_[0]);
+    confess "Not enough data to read a byte" unless length($_[0]);
     return unpack('C', substr($_[0], 0, 1, ''))
+}
+
+sub _u1array {
+    use bytes;
+    confess "Not enough data to read $_[1] bytes" unless length($_[0]) >= $_[1];
+    return unpack("C$_[1]", substr($_[0], 0, $_[1], ''))
 }
 
 sub _signedu1 {
     use bytes;
-    croak "Not enough data to read a byte" unless length($_[0]);
+    confess "Not enough data to read a byte" unless length($_[0]);
     return unpack('c', substr($_[0], 0, 1, ''))
 }
 
 sub _u2 {
     use bytes;
-    croak "Not enough data to read two bytes" unless length($_[0]) >= 2;
+    confess "Not enough data to read two bytes" unless length($_[0]) >= 2;
     return unpack('n', substr($_[0], 0, 2, ''))
 }
 
 sub _signedu2 {
     use bytes;
-    croak "Not enough data to read two bytes" unless length($_[0]) >= 2;
+    confess "Not enough data to read two bytes" unless length($_[0]) >= 2;
     return _bytesToVector(substr($_[0], 0, 2, ''), 16)->to_Dec     # Bit::Vector defaults to signed values, so 16 bits is ok
 }
 
@@ -135,17 +141,17 @@ sub _signedu2 {
 
 sub _u4 {
     use bytes;
-    croak "Not enough data to read four bytes" unless length($_[0]) >= 4;
+    confess "Not enough data to read four bytes" unless length($_[0]) >= 4;
     return _bytesToVector(substr($_[0], 0, 4, ''), 65)->to_Dec	# Use 65 bits to be sure we have an unsigned value
 }
 
 sub _signedu4 {
     use bytes;
-    croak "Not enough data to read four bytes" unless length($_[0]) >= 4;
+    confess "Not enough data to read four bytes" unless length($_[0]) >= 4;
     return _bytesToVector(substr($_[0], 0, 4, ''), 64)->to_Dec     # Bit::Vector defaults to signed values, so 64 bits is ok
 }
 
-sub float {
+sub _float {
     my $u4 = _u4($_[0]);
     my $vector = _bytesToVector($u4, 32);
 
@@ -206,21 +212,21 @@ sub float {
     $mantissaf->bpow($ef);                    # 2 ** ($e - 150)
     $mf->bmul($mantissaf);                    # $m * (2 ** ($e - 150))
     $mf->bmul($sf);                           # $s * $m * (2 ** ($e - 150))
-    return $mf
+    return bless $mf, 'CONSTANT_Float_info'
 }
 
-sub long {
-  my $vhigh = _u4($_[0]);
-  my $vlow  = _u4($_[0]);
+sub _long {
+  my $vhigh = _bytesToVector(_u4($_[0]), 32);
+  my $vlow  = _bytesToVector(_u4($_[0]), 32);
   #
   # ((long) high_bytes << 32) + low_bytes
   #
-  return Bit::Vector->Concat_List($vhigh, $vlow)->to_Dec()
+  return bless \Bit::Vector->Concat_List($vhigh, $vlow)->to_Dec(), 'CONSTANT_Long_info'
 }
 
-sub double {
-    my $vhigh = _u4($_[0]);
-    my $vlow  = _u4($_[0]);
+sub _double {
+    my $vhigh = _bytesToVector(_u4($_[0]), 32);
+    my $vlow  = _bytesToVector(_u4($_[0]), 32);
     #
     # ((long) high_bytes << 32) + low_bytes
     #
@@ -284,20 +290,22 @@ sub double {
     $mantissaf->bpow($ef);                     # 2 ** ($e - 150)
     $mf->bmul($mantissaf);                     # $m * (2 ** ($e - 150))
     $mf->bmul($sf);                            # $s * $m * (2 ** ($e - 150))
-    return $mf
+    return bless $mf, 'CONSTANT_Double_info'
 }
 
-sub utf8 {
+sub _utf8 {
+    # length is the second parameter
     #
     # Disable all conversion warnings:
     # either we know we succeed, either we abort -;
     #
     no warnings;
 
-    my $s = undef;
-    return $s unless length($_[0]);
+    my $s;
 
-    my @bytes = unpack('C*', $_[0]);
+    my $length = _u2($_[0]);
+    return bless \$s, 'CONSTANT_Utf8_info' unless $length;
+    my @bytes = _u1array($_[0], $length);
     my ($val0, $val1, $val2, $val3, $val4, $val5) = '';
 
     while (@bytes) {
@@ -340,11 +348,11 @@ sub utf8 {
 	    splice(@bytes, 0, 2), $s .= chr((($val0 & 0xF ) << 12) + (($val1 & 0x3F) << 6) + ($val2 & 0x3F))
 	}
 	else {
-	    croak sprintf('Unable to map byte with value 0x%x', $val0)
+	    confess sprintf('Unable to map byte with value 0x%x', $val0)
 	}
     }
 
-    return $s
+    return bless \$s, 'CONSTANT_Utf8_info'
 }
 
 sub parse {
@@ -365,8 +373,9 @@ sub _ClassFile {
             #
             # Because of Long and Double that takes two indices
             #
+            my $max = $constant_pool_count - 2;
             my @constant_pool = ();
-            foreach my $i (0.. $constant_pool_count-2) {
+            for (my $i = 0; $i < $max; $i++) {
                 my $constant_pool = _cp_info($_[0]);
                 $constant_pool[  $i] = $constant_pool;
                 $constant_pool[++$i] = undef if ref($constant_pool) =~ /^CONSTANT_(?:Long|Double)/
@@ -374,24 +383,78 @@ sub _ClassFile {
             \@constant_pool },
         access_flags        => _u2($_[0]),
         this_class          => _u2($_[0]),
-        super_class         => _u2($_[0]),
-        interfaces_count    => $interfaces_count = _u2($_[0]),
+        super_class         => do { my $super_class = _u2($_[0]); print STDERR "\$super_class=$super_class\n"; $super_class },
+        interfaces_count    => do { $interfaces_count = _u2($_[0]); print STDERR "\$interfaces_count=$interfaces_count\n"; $interfaces_count },
         interfaces          => [ map { _u2($_[0]) } (1.. $interfaces_count) ],
-        fields_count        => $fields_count = _u2($_[0]),
-        fields              => [ map { _field_info($_[0]) } (1.. $fields_count) ],
-        methods_count       => $methods_count = _u2($_[0]),
-        methods             => [ map { _method_info($_[0]) } (1.. $methods_count) ],
-        attributes_count    => $attributes_count = _u2($_[0]),
-        attributes          => [ map { _attribute_info($_[0]) } (1.. $attributes_count) ]
+        interfaces_count    => do { $fields_count = _u2($_[0]); print STDERR "\$fields_count=$fields_count\n"; $fields_count },
+        fields              => [ map { _field_info($_[0]) } (1..$fields_count) ],
+        interfaces_count    => do { $methods_count = _u2($_[0]); print STDERR "\$methods_count=$fields_count\n"; $methods_count },
+        methods             => [ map { _method_info($_[0]) } (1..$methods_count) ],
+        interfaces_count    => do { $attributes_count = _u2($_[0]); print STDERR "\$attributes_count=$attributes_count\n"; $attributes_count },
+        attributes          => [ map { _attribute_info($_[0]) } (1..$attributes_count) ]
     }, 'ClassFile'
 }
 
-sub _cp_info {}
+sub _integer {
+    bless \_u4($_[0]), 'CONSTANT_Integer_info'
+}
 
-sub _attribute_info {}
+sub _cp_info {
+    my $tag  = _u1($_[0]);
 
-sub _method_info {}
+    my $length;
 
-sub _field_info {}
+    return bless {                 name_index  => _u2($_[0])                                    }, 'CONSTANT_Class_info'              if $tag ==  7;
+    return bless {                class_index  => _u2($_[0]), name_and_type_index => _u2($_[0]) }, 'CONSTANT_Fieldref_info'           if $tag ==  9;
+    return bless {                class_index  => _u2($_[0]), name_and_type_index => _u2($_[0]) }, 'CONSTANT_Methodref_info'          if $tag == 10;
+    return bless {                class_index  => _u2($_[0]), name_and_type_index => _u2($_[0]) }, 'CONSTANT_InterfaceMethodref_info' if $tag == 11;
+    return bless {                string_index => _u2($_[0])                                    }, 'CONSTANT_String_info'             if $tag ==  8;
+    return                                   _integer($_[0])                                                                          if $tag ==  3;
+    return                                     _float($_[0])                                                                          if $tag ==  4;
+    return                                      _long($_[0])                                                                          if $tag ==  5;
+    return                                    _double($_[0])                                                                          if $tag ==  6;
+    return bless {                 name_index  => _u2($_[0]),    descriptor_index => _u2($_[0]) }, 'CONSTANT_NameAndType_info'        if $tag == 12;
+    return                                      _utf8($_[0])                                                                          if $tag ==  1;
+    return bless {              reference_kind => _u1($_[0]),   reference_index   => _u2($_[0]) }, 'CONSTANT_MethodHandle_info'       if $tag == 15;
+    return bless {            descriptor_index => _u2($_[0])                                    }, 'CONSTANT_MethodType_info'         if $tag == 16;
+    return bless { bootstrap_method_attr_index => _u2($_[0]), name_and_type_index => _u2($_[0]) }, 'CONSTANT_InvokeDynamic_info'      if $tag == 18;
+    return bless {                 name_index  => _u2($_[0])                                    }, 'CONSTANT_Module_info'             if $tag == 19;
+    return bless {                 name_index  => _u2($_[0])                                    }, 'CONSTANT_Package_info'            if $tag == 20;
+    croak "Unsupported constant pool tag $tag";
+}
+
+sub _attribute_info {
+    my $attribute_length;
+    
+    return bless {
+        attribute_name_index => _u2($_[0]),
+        attribute_length     => $attribute_length = _u4($_[0]),
+        info                 => _u1array($_[0], $attribute_length)
+    }, 'attribute_info'
+}
+
+sub _method_info {
+    my $attributes_count;
+
+    return bless {
+        access_flags        => _u2($_[0]),
+        name_index          => _u2($_[0]),
+        descriptor_index    => _u2($_[0]),
+        attributes_count    => $attributes_count = _u2($_[0]),
+        attributes          => [ map { _attribute_info($_[0]) } (1.. $attributes_count) ]        
+    }, 'method_info'
+}
+
+sub _field_info {
+    my $attributes_count;
+
+    return bless {
+        access_flags        => _u2($_[0]),
+        name_index          => _u2($_[0]),
+        descriptor_index    => _u2($_[0]),
+        attributes_count    => $attributes_count = _u2($_[0]),
+        attributes          => [ map { _attribute_info($_[0]) } (1.. $attributes_count) ]        
+    }, 'field_info'
+}
 
 1;
